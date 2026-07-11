@@ -1,0 +1,15 @@
+{
+  "workflow": {
+    "name": "example_workflow",
+    "tasks": [
+      {
+        "id": "get_image",
+        "depends_on": []
+      },
+      {
+        "id": "crop_id",
+        "depends_on": ["get_image"]
+      }
+    ]
+  }
+}

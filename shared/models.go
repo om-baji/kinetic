@@ -1,6 +1,8 @@
 package shared
 
-import "time"
+import (
+	"time"
+)
 
 type Workflow struct {
 	Name  string `json:"name"`
@@ -38,38 +40,68 @@ const (
 )
 
 type WorkflowRecord struct {
-	ID        string         `json:"id"`
-	Name      string         `json:"name"`
-	Status    WorkflowStatus `json:"status"`
-	Tasks     []TaskRecord   `json:"tasks"`
-	CreatedAt time.Time      `json:"created_at"`
-	UpdatedAt time.Time      `json:"updated_at"`
+	BaseModel
+	Name   string         `json:"name"`
+	Status WorkflowStatus `json:"status"`
+
+	GraphID uint
+	Graph   Graph
+
+	Tasks []TaskRecord `gorm:"foreignKey:WorkflowID"`
 }
 
 type TaskRecord struct {
-	ID      string     `json:"id"`
-	Depends []string   `json:"depends"`
-	Status  TaskStatus `json:"status"`
+	BaseModel
+	WorkflowID string
+
+	Name   string     `json:"name"`
+	Status TaskStatus `json:"status"`
+
+	Dependencies []TaskDependency `gorm:"foreignKey:TaskID"`
+	Logs         []LogEntry       `gorm:"foreignKey:TaskID"`
+}
+
+type TaskDependency struct {
+	BaseModel
+	TaskID          string
+	DependsOnTaskID string
+
+	Task      TaskRecord `gorm:"foreignKey:TaskID"`
+	DependsOn TaskRecord `gorm:"foreignKey:DependsOnTaskID"`
 }
 
 type Graph struct {
-	Nodes []GraphNode `json:"nodes"`
-	Edges []GraphEdge `json:"edges"`
+	BaseModel
+	Nodes []GraphNode `gorm:"foreignKey:GraphID"`
+	Edges []GraphEdge `gorm:"foreignKey:GraphID"`
 }
 
 type GraphNode struct {
-	ID     string     `json:"id"`
+	BaseModel
+	GraphID string
+
+	TaskID string
+	Task   TaskRecord
+
 	Status TaskStatus `json:"status"`
 }
 
 type GraphEdge struct {
-	From string `json:"from"`
-	To   string `json:"to"`
+	BaseModel
+	GraphID string
+
+	FromNodeID string
+	ToNodeID   string
+
+	FromNode GraphNode `gorm:"foreignKey:FromNodeID"`
+	ToNode   GraphNode `gorm:"foreignKey:ToNodeID"`
 }
 
 type LogEntry struct {
+	BaseModel
+	TaskID string
+
 	Timestamp time.Time `json:"timestamp"`
-	TaskID    string    `json:"task_id"`
 	Level     string    `json:"level"`
 	Message   string    `json:"message"`
 }

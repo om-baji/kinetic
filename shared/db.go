@@ -16,5 +16,5 @@ func ConnectDB(url string) *gorm.DB {
 }
 
 func MigrateDB(db *gorm.DB) {
-	db.AutoMigrate(&WorkflowRecord{}, &TaskRecord{})
+	db.AutoMigrate(&WorkflowRecord{}, &TaskRecord{}, &TaskDependency{}, &Graph{}, &GraphNode{}, &GraphEdge{}, &LogEntry{})
 }

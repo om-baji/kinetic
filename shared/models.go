@@ -11,6 +11,7 @@ type Workflow struct {
 
 type Task struct {
 	Id      string   `json:"id"`
+	Name    string   `json:"name"`
 	Depends []string `json:"depends"`
 }
 
@@ -44,7 +45,7 @@ type WorkflowRecord struct {
 	Name   string         `json:"name"`
 	Status WorkflowStatus `json:"status"`
 
-	GraphID uint
+	GraphID string
 	Graph   Graph
 
 	Tasks []TaskRecord `gorm:"foreignKey:WorkflowID"`

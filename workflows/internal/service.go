@@ -1,24 +1,20 @@
 package internal
 
 import (
-	"sync"
+	"context"
+	"errors"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/om-baji/kinetic/shared"
+	"gorm.io/gorm"
 )
 
 type WorkflowService struct {
-	mu        sync.RWMutex
-	workflows map[string]*shared.WorkflowRecord
-	logs      map[string][]shared.LogEntry
+	db *gorm.DB
 }
 
-func NewWorkflowService() *WorkflowService {
-	return &WorkflowService{
-		workflows: make(map[string]*shared.WorkflowRecord),
-		logs:      make(map[string][]shared.LogEntry),
-	}
+func NewWorkflowService(db *gorm.DB) *WorkflowService {
+	return &WorkflowService{db: db}
 }
 
 func (s *WorkflowService) Create(payload *shared.Workflow) (*shared.WorkflowRecord, error) {
@@ -26,177 +22,227 @@ func (s *WorkflowService) Create(payload *shared.Workflow) (*shared.WorkflowReco
 		return nil, err
 	}
 
-	now := time.Now().UTC()
-	id := uuid.New().String()
+	ctx := context.Background()
 
-	taskRecords := make([]shared.TaskRecord, len(payload.Tasks))
-	for i, t := range payload.Tasks {
-		taskRecords[i] = shared.TaskRecord{
-			ID:      t.Id,
-			Depends: t.Depends,
-			Status:  shared.TaskStatusPending,
+	workflow := &shared.WorkflowRecord{
+		Name:   payload.Name,
+		Status: shared.WorkflowStatusCreated,
+	}
+
+	if err := s.db.WithContext(ctx).Create(workflow).Error; err != nil {
+		shared.HandleErr(err)
+	}
+
+	taskMap := make(map[string]*shared.TaskRecord, len(payload.Tasks))
+	for _, t := range payload.Tasks {
+		record := &shared.TaskRecord{
+			WorkflowID: workflow.ID,
+			Name:       t.Name,
+			Status:     shared.TaskStatusPending,
+		}
+		if err := s.db.WithContext(ctx).Create(record).Error; err != nil {
+			shared.HandleErr(err)
+		}
+		taskMap[t.Id] = record
+	}
+
+	for _, t := range payload.Tasks {
+		record := taskMap[t.Id]
+		for _, depID := range t.Depends {
+			dep := &shared.TaskDependency{
+				TaskID:          record.ID,
+				DependsOnTaskID: taskMap[depID].ID,
+			}
+			if err := s.db.WithContext(ctx).Create(dep).Error; err != nil {
+				shared.HandleErr(err)
+			}
 		}
 	}
 
-	record := &shared.WorkflowRecord{
-		ID:        id,
-		Name:      payload.Name,
-		Status:    shared.WorkflowStatusCreated,
-		Tasks:     taskRecords,
-		CreatedAt: now,
-		UpdatedAt: now,
+	graph := &shared.Graph{}
+	if err := s.db.WithContext(ctx).Create(graph).Error; err != nil {
+		shared.HandleErr(err)
 	}
 
-	s.mu.Lock()
-	s.workflows[id] = record
-	s.logs[id] = []shared.LogEntry{
-		{
-			Timestamp: now,
-			TaskID:    "",
-			Level:     "info",
-			Message:   "workflow created",
-		},
+	workflow.GraphID = graph.ID
+	if err := s.db.WithContext(ctx).Save(workflow).Error; err != nil {
+		shared.HandleErr(err)
 	}
-	s.mu.Unlock()
 
-	return record, nil
+	nodeMap := make(map[string]*shared.GraphNode, len(payload.Tasks))
+	for _, t := range payload.Tasks {
+		record := taskMap[t.Id]
+		node := &shared.GraphNode{
+			GraphID: graph.ID,
+			TaskID:  record.ID,
+			Status:  shared.TaskStatusPending,
+		}
+		if err := s.db.WithContext(ctx).Create(node).Error; err != nil {
+			shared.HandleErr(err)
+		}
+		nodeMap[t.Id] = node
+	}
+
+	for _, t := range payload.Tasks {
+		toNode := nodeMap[t.Id]
+		for _, depID := range t.Depends {
+			fromNode := nodeMap[depID]
+			edge := &shared.GraphEdge{
+				GraphID:    graph.ID,
+				FromNodeID: fromNode.ID,
+				ToNodeID:   toNode.ID,
+			}
+			if err := s.db.WithContext(ctx).Create(edge).Error; err != nil {
+				shared.HandleErr(err)
+			}
+		}
+	}
+
+	if err := s.db.WithContext(ctx).Preload("Tasks.Dependencies").Preload("Tasks.Logs").Preload("Graph.Nodes").Preload("Graph.Edges").First(workflow, "id = ?", workflow.ID).Error; err != nil {
+		shared.HandleErr(err)
+	}
+
+	return workflow, nil
 }
 
 func (s *WorkflowService) GetByID(id string) (*shared.WorkflowRecord, error) {
-	s.mu.RLock()
-	record, ok := s.workflows[id]
-	s.mu.RUnlock()
-
-	if !ok {
-		return nil, shared.NewNotFoundError("workflow not found: " + id)
+	var record shared.WorkflowRecord
+	err := s.db.
+		Preload("Tasks.Dependencies").
+		Preload("Tasks.Logs").
+		Preload("Graph.Nodes").
+		Preload("Graph.Edges").
+		First(&record, "id = ?", id).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, shared.NewNotFoundError("workflow not found: " + id)
+		}
+		shared.HandleErr(err)
 	}
-	return record, nil
+	return &record, nil
 }
 
 func (s *WorkflowService) Delete(id string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	record, ok := s.workflows[id]
-	if !ok {
-		return shared.NewNotFoundError("workflow not found: " + id)
+	record, err := s.GetByID(id)
+	if err != nil {
+		return err
 	}
 
 	if record.Status == shared.WorkflowStatusRunning {
 		return shared.NewConflictError("cannot delete a running workflow")
 	}
 
-	record.Status = shared.WorkflowStatusCancelled
-	record.UpdatedAt = time.Now().UTC()
-
+	now := time.Now().UTC()
 	for i := range record.Tasks {
 		if record.Tasks[i].Status == shared.TaskStatusPending ||
 			record.Tasks[i].Status == shared.TaskStatusReady ||
 			record.Tasks[i].Status == shared.TaskStatusRetrying {
-			record.Tasks[i].Status = shared.TaskStatusCancelled
+			s.db.Model(&record.Tasks[i]).Updates(map[string]interface{}{
+				"status":     shared.TaskStatusCancelled,
+				"updated_at": now,
+			})
 		}
 	}
 
-	s.appendLogLocked(id, "", "info", "workflow cancelled")
+	s.db.Model(record).Updates(map[string]interface{}{
+		"status":     shared.WorkflowStatusCancelled,
+		"updated_at": now,
+	})
 
-	delete(s.workflows, id)
+	s.db.Create(&shared.LogEntry{
+		Timestamp: now,
+		Level:     "info",
+		Message:   "workflow cancelled",
+	})
+
+	s.db.Delete(record)
+
 	return nil
 }
 
 func (s *WorkflowService) Pause(id string) (*shared.WorkflowRecord, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	record, ok := s.workflows[id]
-	if !ok {
-		return nil, shared.NewNotFoundError("workflow not found: " + id)
+	record, err := s.GetByID(id)
+	if err != nil {
+		return nil, err
 	}
 
 	if record.Status != shared.WorkflowStatusRunning {
 		return nil, shared.NewConflictError("only running workflows can be paused")
 	}
 
-	record.Status = shared.WorkflowStatusPaused
-	record.UpdatedAt = time.Now().UTC()
-	s.appendLogLocked(id, "", "info", "workflow paused")
+	now := time.Now().UTC()
+	s.db.Model(record).Updates(map[string]interface{}{
+		"status":     shared.WorkflowStatusPaused,
+		"updated_at": now,
+	})
 
+	s.db.Create(&shared.LogEntry{
+		Timestamp: now,
+		Level:     "info",
+		Message:   "workflow paused",
+	})
+
+	record.Status = shared.WorkflowStatusPaused
+	record.UpdatedAt = now
 	return record, nil
 }
 
 func (s *WorkflowService) Resume(id string) (*shared.WorkflowRecord, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	record, ok := s.workflows[id]
-	if !ok {
-		return nil, shared.NewNotFoundError("workflow not found: " + id)
+	record, err := s.GetByID(id)
+	if err != nil {
+		return nil, err
 	}
 
 	if record.Status != shared.WorkflowStatusPaused {
 		return nil, shared.NewConflictError("only paused workflows can be resumed")
 	}
 
-	record.Status = shared.WorkflowStatusRunning
-	record.UpdatedAt = time.Now().UTC()
-	s.appendLogLocked(id, "", "info", "workflow resumed")
+	now := time.Now().UTC()
+	s.db.Model(record).Updates(map[string]interface{}{
+		"status":     shared.WorkflowStatusRunning,
+		"updated_at": now,
+	})
 
+	s.db.Create(&shared.LogEntry{
+		Timestamp: now,
+		Level:     "info",
+		Message:   "workflow resumed",
+	})
+
+	record.Status = shared.WorkflowStatusRunning
+	record.UpdatedAt = now
 	return record, nil
 }
 
 func (s *WorkflowService) GetGraph(id string) (*shared.Graph, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	record, ok := s.workflows[id]
-	if !ok {
-		return nil, shared.NewNotFoundError("workflow not found: " + id)
+	record, err := s.GetByID(id)
+	if err != nil {
+		return nil, err
 	}
 
-	graph := &shared.Graph{
-		Nodes: make([]shared.GraphNode, 0, len(record.Tasks)),
-		Edges: make([]shared.GraphEdge, 0),
+	var graph shared.Graph
+	err = s.db.
+		Preload("Nodes").
+		Preload("Edges").
+		First(&graph, "id = ?", record.GraphID).Error
+	if err != nil {
+		shared.HandleErr(err)
 	}
-
-	for _, t := range record.Tasks {
-		graph.Nodes = append(graph.Nodes, shared.GraphNode{
-			ID:     t.ID,
-			Status: t.Status,
-		})
-		for _, dep := range t.Depends {
-			graph.Edges = append(graph.Edges, shared.GraphEdge{
-				From: dep,
-				To:   t.ID,
-			})
-		}
-	}
-
-	return graph, nil
+	return &graph, nil
 }
 
 func (s *WorkflowService) GetLogs(id string) ([]shared.LogEntry, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	_, ok := s.workflows[id]
-	if !ok {
-		return nil, shared.NewNotFoundError("workflow not found: " + id)
+	_, err := s.GetByID(id)
+	if err != nil {
+		return nil, err
 	}
 
-	logs, exists := s.logs[id]
-	if !exists {
-		return []shared.LogEntry{}, nil
+	var taskIDs []string
+	s.db.Model(&shared.TaskRecord{}).Where("workflow_id = ?", id).Pluck("id", &taskIDs)
+
+	var logs []shared.LogEntry
+	if err := s.db.Where("task_id IN ?", taskIDs).Order("timestamp asc").Find(&logs).Error; err != nil {
+		shared.HandleErr(err)
 	}
-
-	result := make([]shared.LogEntry, len(logs))
-	copy(result, logs)
-	return result, nil
-}
-
-func (s *WorkflowService) appendLogLocked(workflowID, taskID, level, message string) {
-	s.logs[workflowID] = append(s.logs[workflowID], shared.LogEntry{
-		Timestamp: time.Now().UTC(),
-		TaskID:    taskID,
-		Level:     level,
-		Message:   message,
-	})
+	return logs, nil
 }

@@ -1,2 +1,7 @@
 SRS.md
 build/
+.env
+go.work
+go.work.sum
+generated/
+cmd

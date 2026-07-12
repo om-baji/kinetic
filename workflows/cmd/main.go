@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"os"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/om-baji/kinetic/shared"
@@ -14,7 +15,15 @@ func main() {
 	app.Use(shared.Recovery())
 	app.Use(shared.Logger())
 
-	svc := internal.NewWorkflowService()
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		dbURL = "postgres://postgres:postgres@localhost:5432/kinetic?sslmode=disable"
+	}
+
+	db := shared.ConnectDB(dbURL)
+	shared.MigrateDB(db)
+
+	svc := internal.NewWorkflowService(db)
 	ctrl := internal.NewWorkflowController(svc)
 
 	internal.RegisterRoutes(app, ctrl)

@@ -1,15 +1,33 @@
 {
-  "workflow": {
-    "name": "example_workflow",
-    "tasks": [
-      {
-        "id": "get_image",
-        "depends_on": []
-      },
-      {
-        "id": "crop_id",
-        "depends_on": ["get_image"]
-      }
-    ]
-  }
+  "workflow_name": "train-model",
+  "tasks": [
+    {
+      "id": "download",
+      "type": "docker"
+    },
+    {
+      "id": "preprocess",
+      "depends": ["download"]
+    },
+    {
+      "id": "trainA",
+      "depends": ["preprocess"]
+    },
+    {
+      "id": "trainB",
+      "depends": ["preprocess"]
+    },
+    {
+      "id": "evaluate",
+      "depends": ["trainA", "trainB"]
+    },
+    {
+      "id": "upload",
+      "depends": ["evaluate"]
+    },
+    {
+      "id": "notify",
+      "depends": ["upload"]
+    }
+  ]
 }

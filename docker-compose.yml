@@ -1,0 +1,22 @@
+services:
+  database:
+    container_name: psql_container
+    image: postgres
+    environment:
+      POSTGRES_PASSWORD: mySecretKey
+    ports:
+      - 5432:5432
+  adminer:
+    container_name: psql_adminer
+    image: adminer
+    ports:
+      - 8080:8080
+  cache:
+    container_name: redis_cache
+    image: redis
+    ports:
+      - 6379:6379
+    restart: no
+    depends_on:
+      - database
+      - adminer

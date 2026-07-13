@@ -4,6 +4,11 @@ import (
 	"time"
 )
 
+const (
+	CompilerQueue = "compiler:queue"
+	RuntimeQueue  = "runtime:queue"
+)
+
 type Workflow struct {
 	Name  string `json:"name"`
 	Tasks []Task `json:"tasks"`

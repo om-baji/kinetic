@@ -17,92 +17,29 @@ func NewWorkflowService(db *gorm.DB) *WorkflowService {
 	return &WorkflowService{db: db}
 }
 
-func (s *WorkflowService) Create(payload *shared.Workflow) (*shared.WorkflowRecord, error) {
-	if err := ValidateDAG(payload.Tasks); err != nil {
+func (s *WorkflowService) Create(payload *shared.Workflow) ([]byte, error) {
+	if err := shared.ValidateDAG(payload.Tasks); err != nil {
 		return nil, err
 	}
 
 	ctx := context.Background()
 
-	workflow := &shared.WorkflowRecord{
+	flow := &shared.WorkflowRecord{
 		Name:   payload.Name,
 		Status: shared.WorkflowStatusCreated,
 	}
 
-	if err := s.db.WithContext(ctx).Create(workflow).Error; err != nil {
+	if err := s.db.WithContext(ctx).Create(flow).Error; err != nil {
 		shared.HandleErr(err)
 	}
 
-	taskMap := make(map[string]*shared.TaskRecord, len(payload.Tasks))
-	for _, t := range payload.Tasks {
-		record := &shared.TaskRecord{
-			WorkflowID: workflow.ID,
-			Name:       t.Name,
-			Status:     shared.TaskStatusPending,
-		}
-		if err := s.db.WithContext(ctx).Create(record).Error; err != nil {
-			shared.HandleErr(err)
-		}
-		taskMap[t.Id] = record
-	}
+	t, err := shared.EnqueWorkflow(shared.CompilerQueue, *flow)
 
-	for _, t := range payload.Tasks {
-		record := taskMap[t.Id]
-		for _, depID := range t.Depends {
-			dep := &shared.TaskDependency{
-				TaskID:          record.ID,
-				DependsOnTaskID: taskMap[depID].ID,
-			}
-			if err := s.db.WithContext(ctx).Create(dep).Error; err != nil {
-				shared.HandleErr(err)
-			}
-		}
-	}
-
-	graph := &shared.Graph{}
-	if err := s.db.WithContext(ctx).Create(graph).Error; err != nil {
+	if err != nil {
 		shared.HandleErr(err)
 	}
 
-	workflow.GraphID = graph.ID
-	if err := s.db.WithContext(ctx).Save(workflow).Error; err != nil {
-		shared.HandleErr(err)
-	}
-
-	nodeMap := make(map[string]*shared.GraphNode, len(payload.Tasks))
-	for _, t := range payload.Tasks {
-		record := taskMap[t.Id]
-		node := &shared.GraphNode{
-			GraphID: graph.ID,
-			TaskID:  record.ID,
-			Status:  shared.TaskStatusPending,
-		}
-		if err := s.db.WithContext(ctx).Create(node).Error; err != nil {
-			shared.HandleErr(err)
-		}
-		nodeMap[t.Id] = node
-	}
-
-	for _, t := range payload.Tasks {
-		toNode := nodeMap[t.Id]
-		for _, depID := range t.Depends {
-			fromNode := nodeMap[depID]
-			edge := &shared.GraphEdge{
-				GraphID:    graph.ID,
-				FromNodeID: fromNode.ID,
-				ToNodeID:   toNode.ID,
-			}
-			if err := s.db.WithContext(ctx).Create(edge).Error; err != nil {
-				shared.HandleErr(err)
-			}
-		}
-	}
-
-	if err := s.db.WithContext(ctx).Preload("Tasks.Dependencies").Preload("Tasks.Logs").Preload("Graph.Nodes").Preload("Graph.Edges").First(workflow, "id = ?", workflow.ID).Error; err != nil {
-		shared.HandleErr(err)
-	}
-
-	return workflow, nil
+	return t.Payload(), nil
 }
 
 func (s *WorkflowService) GetByID(id string) (*shared.WorkflowRecord, error) {

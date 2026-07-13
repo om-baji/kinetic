@@ -1,19 +1,3 @@
-If you're building this as a **resume-quality systems project**, I'd recommend making it **much more ambitious than Airflow**. Think of it as a **Distributed Workflow Execution Runtime**, not just a scheduler.
-
----
-
-# Software Requirements Specification (SRS)
-
-## Project Name
-
-**Orion** (placeholder)
-
-**Tagline**
-
-> A distributed DAG execution runtime for fault-tolerant workflow orchestration, resource-aware scheduling, and AI-native pipelines.
-
----
-
 # 1. Introduction
 
 ## 1.1 Purpose
